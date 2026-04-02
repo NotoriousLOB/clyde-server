@@ -11,6 +11,7 @@ macro(tensio_add_benchmark BENCH_NAME BENCH_SOURCE)
         GGUF_IMPLEMENTATION
         TQ_IMPLEMENTATION
         CONVERT_IMPLEMENTATION
+        _GNU_SOURCE
     )
 
     target_compile_options(${BENCH_NAME} PRIVATE -Werror)

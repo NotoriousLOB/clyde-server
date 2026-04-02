@@ -11,6 +11,7 @@ macro(tensio_add_example EXAMPLE_NAME EXAMPLE_SOURCE)
         GGUF_IMPLEMENTATION
         TQ_IMPLEMENTATION
         CONVERT_IMPLEMENTATION
+        _GNU_SOURCE
     )
 
     target_compile_options(${EXAMPLE_NAME} PRIVATE -Werror)

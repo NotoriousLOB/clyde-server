@@ -21,7 +21,7 @@
 #endif
 
 #ifdef TQ_WITH_LZ4
-#  include <lz4.h>
+#  include <lz4frame.h>
 #endif
 
 #define TQ_MAGIC   0x46555154u  /* "TQUF" */
@@ -50,6 +50,22 @@ typedef enum {
 #define TQ_FEATURE_WHT_SEED_PER_TENSOR (1ULL << 1)
 #define TQ_FEATURE_QJL_FOLDED          (1ULL << 2)
 #define TQ_FEATURE_RESERVED            (1ULL << 63)
+
+/* ================================================================
+ * Tensor flags (stored in tq_tensor_t::tensor_flags)
+ * ================================================================ */
+
+/* Bit 0: passthrough — tensor data is raw bytes, not ternary-quantized.
+ * Bits 8..15: original format-specific type (e.g. gguf_type_t value).
+ * This allows lossless round-trip for quantized GGUF types. */
+#define TQ_TFLAG_PASSTHROUGH           (1u << 0)
+#define TQ_TFLAG_ORIG_TYPE_SHIFT       8
+#define TQ_TFLAG_ORIG_TYPE_MASK        0x0000FF00u
+
+#define TQ_TFLAG_SET_ORIG_TYPE(flags, t) \
+    ((flags) | TQ_TFLAG_PASSTHROUGH | (((uint32_t)(t) << TQ_TFLAG_ORIG_TYPE_SHIFT) & TQ_TFLAG_ORIG_TYPE_MASK))
+#define TQ_TFLAG_GET_ORIG_TYPE(flags) \
+    (((flags) & TQ_TFLAG_ORIG_TYPE_MASK) >> TQ_TFLAG_ORIG_TYPE_SHIFT)
 
 /* ================================================================
  * On-disk header (48 bytes)
@@ -121,6 +137,12 @@ void tq_dequant(const tq_file_t *f, uint32_t tensor_idx,
 
 #if defined(TQ_IMPLEMENTATION) && !defined(TQ_IMPLEMENTATION_DONE)
 #define TQ_IMPLEMENTATION_DONE
+
+/* posix_memalign requires _GNU_SOURCE */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <stdlib.h>
 
 /* ================================================================
  * mmap
@@ -221,10 +243,28 @@ void tq_dequant(const tq_file_t *f, uint32_t tensor_idx,
     if (t->frame_size != 0) {
         void *tmp = NULL;
         int rc;
-        rc = posix_memalign(&tmp, 64, (size_t)t->unpacked_size);
+        LZ4F_dctx *dctx = NULL;
+        size_t dst_size = (size_t)t->unpacked_size;
+        size_t src_size = (size_t)t->frame_size;
+        size_t result;
+
+        rc = posix_memalign(&tmp, 64, dst_size);
         if (rc != 0 || !tmp) return;
-        LZ4_decompress_safe((const char *)src, (char *)tmp,
-                            (int)t->frame_size, (int)t->unpacked_size);
+
+        result = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+        if (LZ4F_isError(result)) {
+            free(tmp);
+            return;
+        }
+
+        result = LZ4F_decompress(dctx, tmp, &dst_size, src, &src_size, NULL);
+        LZ4F_freeDecompressionContext(dctx);
+
+        if (LZ4F_isError(result)) {
+            free(tmp);
+            return;
+        }
+
         tq_dequant_raw(t, (const uint8_t *)tmp, dst);
         free(tmp);
         return;

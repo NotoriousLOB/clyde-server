@@ -148,12 +148,27 @@ static int cmd_list(const char *path) {
 }
 
 static int cmd_convert(const char *in, const char *out) {
-    int rc = convert_any_to_any(in, out);
+    int rc;
+    convert_opts_t opts;
+    memset(&opts, 0, sizeof(opts));
+
+    /* Enable LZ4 per-tensor compression by default when writing TQ */
+#ifdef TQ_WITH_LZ4
+    if (strstr(out, ".tq"))
+        opts.use_lz4 = 1;
+#endif
+
+    rc = convert_any_to_any_opts(in, out, &opts);
     if (rc != 0) {
         fprintf(stderr, "Error: conversion failed\n");
         return 1;
     }
-    printf("Converted %s -> %s\n", in, out);
+    printf("Converted %s -> %s", in, out);
+#ifdef TQ_WITH_LZ4
+    if (opts.use_lz4 && strstr(out, ".tq"))
+        printf(" (LZ4 compressed)");
+#endif
+    printf("\n");
     return 0;
 }
 

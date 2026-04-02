@@ -12,7 +12,7 @@ option(TENSIO_ENABLE_VTABLES   "Enable SQLite virtual tables"              ON)
 option(TENSIO_ENABLE_BUNDLE    "Enable tar bundle support"                 ON)
 option(TENSIO_ENABLE_IO_URING  "Enable io_uring async backend (Linux)"     OFF)
 option(TENSIO_ENABLE_STB_IMAGE "Enable stb_image_write support"            ON)
-option(TENSIO_ENABLE_LZ4       "Enable LZ4 compression for TQ format"      OFF)
+option(TENSIO_ENABLE_LZ4       "Enable LZ4 compression for TQ format"      ON)
 option(TENSIO_BUILD_TESTS      "Build test suite"                          OFF)
 option(TENSIO_BUILD_BENCHMARKS "Build benchmarks"                          OFF)
 option(TENSIO_BUILD_EXAMPLES   "Build examples"                            OFF)
@@ -47,11 +47,21 @@ if(TENSIO_ENABLE_LZ4)
     FetchContent_Populate(lz4)
 
     # lz4 does not provide a top-level CMakeLists.txt, so build manually
+    # Include both the core lz4 and the frame API
     add_library(lz4 STATIC
         ${lz4_SOURCE_DIR}/lib/lz4.c
         ${lz4_SOURCE_DIR}/lib/lz4.h
+        ${lz4_SOURCE_DIR}/lib/lz4frame.c
+        ${lz4_SOURCE_DIR}/lib/lz4frame.h
+        ${lz4_SOURCE_DIR}/lib/lz4hc.c
+        ${lz4_SOURCE_DIR}/lib/lz4hc.h
+        ${lz4_SOURCE_DIR}/lib/xxhash.c
+        ${lz4_SOURCE_DIR}/lib/xxhash.h
     )
-    target_include_directories(lz4 PUBLIC ${lz4_SOURCE_DIR}/lib)
+    target_include_directories(lz4 PUBLIC
+        $<BUILD_INTERFACE:${lz4_SOURCE_DIR}/lib>
+        $<INSTALL_INTERFACE:include>
+    )
 endif()
 
 # --------------------------------------------------------------------------
@@ -110,6 +120,7 @@ target_compile_definitions(tensio_cli PRIVATE
     TQ_IMPLEMENTATION
     CONVERT_IMPLEMENTATION
     BUNDLE_IMPLEMENTATION
+    _GNU_SOURCE
 )
 
 target_compile_options(tensio_cli PRIVATE -Werror)
@@ -158,6 +169,10 @@ install(
 )
 
 install(TARGETS tensio EXPORT tensioTargets)
+
+if(TENSIO_ENABLE_LZ4)
+    install(TARGETS lz4 EXPORT tensioTargets)
+endif()
 
 install(EXPORT tensioTargets
     FILE        tensioTargets.cmake
