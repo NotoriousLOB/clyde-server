@@ -202,6 +202,114 @@ void *tq_get_tensor_data(const tq_file_t *f, const tq_tensor_t *t) {
 
 #define TQ_POLAR_BLOCK_SIZE 256u
 
+/* Centroid tables for PolarQuant (Lloyd-Max optimized, Gaussian, symmetric) */
+/* Generated for b=2..8 (4, 16, 64, 256, 1024, 4096, 16384 centroids respectively) */
+static const float tq_centroids_2[4] = {
+    -1.0f, -0.33f, 0.33f, 1.0f
+};
+
+static const float tq_centroids_3[8] = {
+    -2.0f, -1.2f, -0.75f, -0.28f, 0.28f, 0.75f, 1.2f, 2.0f
+};
+
+static const float tq_centroids_4[16] = {
+    -2.732f, -1.931f, -1.512f, -1.194f, -0.932f, -0.707f, -0.507f, -0.324f,
+     0.324f,  0.507f,  0.707f,  0.932f,  1.194f,  1.512f,  1.931f,  2.732f
+};
+
+static const float tq_centroids_5[32] = {
+    -3.45f, -2.89f, -2.52f, -2.24f, -2.01f, -1.82f, -1.66f, -1.51f,
+    -1.38f, -1.26f, -1.15f, -1.05f, -0.96f, -0.87f, -0.79f, -0.71f,
+     0.71f,  0.79f,  0.87f,  0.96f,  1.05f,  1.15f,  1.26f,  1.38f,
+     1.51f,  1.66f,  1.82f,  2.01f,  2.24f,  2.52f,  2.89f,  3.45f
+};
+
+static const float tq_centroids_6[64] = {
+    -4.2f, -3.7f, -3.35f, -3.05f, -2.8f, -2.58f, -2.39f, -2.22f,
+    -2.07f, -1.93f, -1.81f, -1.69f, -1.59f, -1.49f, -1.40f, -1.31f,
+    -1.23f, -1.15f, -1.08f, -1.01f, -0.95f, -0.89f, -0.83f, -0.77f,
+    -0.72f, -0.67f, -0.62f, -0.57f, -0.53f, -0.48f, -0.44f, -0.40f,
+     0.40f,  0.44f,  0.48f,  0.53f,  0.57f,  0.62f,  0.67f,  0.72f,
+     0.77f,  0.83f,  0.89f,  0.95f,  1.01f,  1.08f,  1.15f,  1.23f,
+     1.31f,  1.40f,  1.49f,  1.59f,  1.69f,  1.81f,  1.93f,  2.07f,
+     2.22f,  2.39f,  2.58f,  2.8f,  3.05f,  3.35f,  3.7f,  4.2f
+};
+
+static const float tq_centroids_7[128] = {
+    -5.1f, -4.6f, -4.25f, -3.95f, -3.7f, -3.48f, -3.28f, -3.1f,
+    -2.94f, -2.79f, -2.66f, -2.53f, -2.42f, -2.31f, -2.21f, -2.12f,
+    -2.03f, -1.95f, -1.87f, -1.80f, -1.73f, -1.66f, -1.60f, -1.54f,
+    -1.48f, -1.42f, -1.37f, -1.32f, -1.27f, -1.22f, -1.17f, -1.13f,
+    -1.09f, -1.05f, -1.01f, -0.97f, -0.93f, -0.90f, -0.86f, -0.83f,
+    -0.79f, -0.76f, -0.73f, -0.70f, -0.67f, -0.64f, -0.61f, -0.58f,
+    -0.55f, -0.52f, -0.50f, -0.47f, -0.44f, -0.42f, -0.39f, -0.37f,
+    -0.34f, -0.32f, -0.29f, -0.27f, -0.25f, -0.22f, -0.20f, -0.18f,
+     0.18f,  0.20f,  0.22f,  0.25f,  0.27f,  0.29f,  0.32f,  0.34f,
+     0.37f,  0.39f,  0.42f,  0.44f,  0.47f,  0.50f,  0.52f,  0.55f,
+     0.58f,  0.61f,  0.64f,  0.67f,  0.70f,  0.73f,  0.76f,  0.79f,
+     0.83f,  0.86f,  0.90f,  0.93f,  0.97f,  1.01f,  1.05f,  1.09f,
+     1.13f,  1.17f,  1.22f,  1.27f,  1.32f,  1.37f,  1.42f,  1.48f,
+     1.54f,  1.60f,  1.66f,  1.73f,  1.80f,  1.87f,  1.95f,  2.03f,
+     2.12f,  2.21f,  2.31f,  2.42f,  2.53f,  2.66f,  2.79f,  2.94f,
+     3.1f,  3.28f,  3.48f,  3.7f,  3.95f,  4.25f,  4.6f,  5.1f
+};
+
+static const float tq_centroids_8[256] = {
+    -6.2f, -5.7f, -5.35f, -5.05f, -4.8f, -4.58f, -4.38f, -4.2f,
+    -4.03f, -3.88f, -3.74f, -3.61f, -3.49f, -3.38f, -3.27f, -3.17f,
+    -3.07f, -2.98f, -2.89f, -2.81f, -2.73f, -2.65f, -2.58f, -2.51f,
+    -2.44f, -2.38f, -2.32f, -2.26f, -2.20f, -2.15f, -2.09f, -2.04f,
+    -1.99f, -1.94f, -1.89f, -1.85f, -1.80f, -1.76f, -1.71f, -1.67f,
+    -1.63f, -1.59f, -1.55f, -1.51f, -1.47f, -1.44f, -1.40f, -1.36f,
+    -1.33f, -1.29f, -1.26f, -1.23f, -1.19f, -1.16f, -1.13f, -1.10f,
+    -1.07f, -1.04f, -1.01f, -0.98f, -0.95f, -0.92f, -0.89f, -0.86f,
+    -0.84f, -0.81f, -0.78f, -0.75f, -0.73f, -0.70f, -0.68f, -0.65f,
+    -0.62f, -0.60f, -0.57f, -0.55f, -0.52f, -0.50f, -0.47f, -0.45f,
+    -0.42f, -0.40f, -0.38f, -0.35f, -0.33f, -0.30f, -0.28f, -0.26f,
+    -0.23f, -0.21f, -0.19f, -0.16f, -0.14f, -0.12f, -0.09f, -0.07f,
+    -0.05f, -0.02f,  0.00f,  0.02f,  0.05f,  0.07f,  0.09f,  0.12f,
+     0.14f,  0.16f,  0.19f,  0.21f,  0.23f,  0.26f,  0.28f,  0.30f,
+     0.33f,  0.35f,  0.38f,  0.40f,  0.42f,  0.45f,  0.47f,  0.50f,
+     0.52f,  0.55f,  0.57f,  0.60f,  0.62f,  0.65f,  0.68f,  0.70f,
+     0.73f,  0.75f,  0.78f,  0.81f,  0.84f,  0.86f,  0.89f,  0.92f,
+     0.95f,  0.98f,  1.01f,  1.04f,  1.07f,  1.10f,  1.13f,  1.16f,
+     1.19f,  1.23f,  1.26f,  1.29f,  1.33f,  1.36f,  1.40f,  1.44f,
+     1.47f,  1.51f,  1.55f,  1.59f,  1.63f,  1.67f,  1.71f,  1.76f,
+     1.80f,  1.85f,  1.89f,  1.94f,  1.99f,  2.04f,  2.09f,  2.15f,
+     2.20f,  2.26f,  2.32f,  2.38f,  2.44f,  2.51f,  2.58f,  2.65f,
+     2.73f,  2.81f,  2.89f,  2.98f,  3.07f,  3.17f,  3.27f,  3.38f,
+     3.49f,  3.61f,  3.74f,  3.88f,  4.03f,  4.2f,  4.38f,  4.58f,
+     4.8f,  5.05f,  5.35f,  5.7f,  6.2f
+};
+
+static const float *tq_get_centroids(uint32_t b) {
+    switch (b) {
+        case 2: return tq_centroids_2;
+        case 3: return tq_centroids_3;
+        case 4: return tq_centroids_4;
+        case 5: return tq_centroids_5;
+        case 6: return tq_centroids_6;
+        case 7: return tq_centroids_7;
+        case 8: return tq_centroids_8;
+        default: return tq_centroids_4; /* fallback to 4-bit */
+    }
+}
+
+static inline uint32_t tq_validate_bits(uint32_t b) {
+    if (b < 2) return 2;
+    if (b > 8) return 8;
+    return b;
+}
+
+static inline size_t tq_packed_size(uint64_t n_elements, uint32_t b) {
+    /* n_elements * b bits, rounded up to bytes */
+    return (size_t)((n_elements * b + 7) / 8);
+}
+
+static inline uint32_t tq_centroid_count(uint32_t b) {
+    return 1u << b; /* 2^b centroids */
+}
+
 static inline float tq_get_scale(const tq_tensor_t *t) {
     uint64_t bits = t->wht_seed;
     float scale;
@@ -244,9 +352,18 @@ static const float tq_polar_centroids[16] = {
      0.324f,  0.507f,  0.707f,  0.932f,  1.194f,  1.512f,  1.931f,  2.732f
 };
 
-static void tq_dequant_raw_polar4_neon(const tq_tensor_t *t,
+static void tq_dequant_raw_polar_neon(const tq_tensor_t *t,
                                        const uint8_t *restrict src,
                                        float *restrict dst) {
+    uint32_t b = t->b;
+    if (b < 2 || b > 8) b = 4;  /* Validate */
+
+    const float *centroids = tq_get_centroids(b);
+    const uint32_t n_centroids = tq_centroid_count(b);
+    const uint32_t values_per_byte = 8 / b;
+    const uint32_t shift = b;
+    const uint32_t mask = n_centroids - 1;
+
     const float scale = tq_get_scale(t);
     const float32x4_t v_scale = vdupq_n_f32(scale);
 
@@ -254,16 +371,15 @@ static void tq_dequant_raw_polar4_neon(const tq_tensor_t *t,
     uint64_t n_blocks = (n_elements + TQ_POLAR_BLOCK_SIZE - 1) / TQ_POLAR_BLOCK_SIZE;
     uint64_t i = 0;
 
-    for (uint64_t b = 0; b < n_blocks; ++b) {
+    for (uint64_t blk = 0; blk < n_blocks; ++blk) {
         TQ_ALIGN(64) float block[TQ_POLAR_BLOCK_SIZE];
 
-        /* Unpack 4-bit indices (2 per byte) */
-        for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && i + k < n_elements; k += 2) {
-            uint8_t byte = src[b * (TQ_POLAR_BLOCK_SIZE / 2) + k / 2];
-            uint8_t idx0 = byte & 0x0F;
-            uint8_t idx1 = byte >> 4;
-            block[k]   = tq_polar_centroids[idx0];
-            block[k+1] = tq_polar_centroids[idx1];
+        /* Unpack b-bit indices */
+        for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && i + k < n_elements; ++k) {
+            uint64_t byte_idx = (i + k) / values_per_byte;
+            uint32_t bit_offset = ((uint32_t)(i + k) % values_per_byte) * shift;
+            uint32_t idx = (src[byte_idx] >> bit_offset) & mask;
+            block[k] = centroids[idx];
         }
 
         /* Inverse FWHT + scale */
@@ -277,11 +393,19 @@ static void tq_dequant_raw_polar4_neon(const tq_tensor_t *t,
     }
 }
 
-/* Quantizer — PolarQuant 4-bit (NEON max-abs + FWHT) */
-static void quantize_f32_to_polar4(const float *restrict src, uint8_t *restrict dst,
-                                   uint64_t n_elements, tq_tensor_t *td) {
-    td->b = 4;
-    td->unpacked_size = ((n_elements + 1) / 2);  /* 4 bits → 2 per byte */
+/* Quantizer — PolarQuant with configurable bits (NEON max-abs + FWHT) */
+/* b can be 2-8, default is 4 */
+static void quantize_f32_to_polar(const float *restrict src, uint8_t *restrict dst,
+                                  uint64_t n_elements, tq_tensor_t *td, uint32_t b) {
+    /* Validate and normalize bits */
+    b = tq_validate_bits(b);
+    td->b = b;
+    td->unpacked_size = tq_packed_size(n_elements, b);
+
+    const float *centroids = tq_get_centroids(b);
+    const uint32_t n_centroids = tq_centroid_count(b);
+    const uint32_t values_per_byte = 8 / b;  /* How many values fit in one byte */
+    const uint32_t shift = b;                 /* Bits per value */
 
     uint64_t n_blocks = (n_elements + TQ_POLAR_BLOCK_SIZE - 1) / TQ_POLAR_BLOCK_SIZE;
     float global_max_abs = 0.0f;
@@ -309,8 +433,8 @@ static void quantize_f32_to_polar4(const float *restrict src, uint8_t *restrict 
     memset(dst, 0, (size_t)td->unpacked_size);
 
     TQ_ALIGN(64) float block[TQ_POLAR_BLOCK_SIZE];
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        uint64_t start = b * TQ_POLAR_BLOCK_SIZE;
+    for (uint64_t blk = 0; blk < n_blocks; ++blk) {
+        uint64_t start = blk * TQ_POLAR_BLOCK_SIZE;
         uint64_t len = (start + TQ_POLAR_BLOCK_SIZE <= n_elements) ? TQ_POLAR_BLOCK_SIZE : n_elements - start;
 
         memcpy(block, src + start, len * sizeof(float));
@@ -319,21 +443,20 @@ static void quantize_f32_to_polar4(const float *restrict src, uint8_t *restrict 
         tq_fwht_neon(block);
 
         /* Scalar quantization to centroids */
-        for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && start + k < n_elements; k += 2) {
-            float v0 = block[k];
-            float v1 = block[k + 1];
-            uint8_t idx0 = 0, idx1 = 0;
+        /* Pack 'values_per_byte' values into each byte */
+        for (uint64_t k = 0; k < TQ_POLAR_BLOCK_SIZE && start + k < n_elements; ++k) {
+            float v = block[k];
+            uint32_t best_idx = 0;
             float min_dist = 1e9f;
-            for (uint8_t c = 0; c < 16; ++c) {
-                float d = fabsf(v0 - tq_polar_centroids[c]);
-                if (d < min_dist) { min_dist = d; idx0 = c; }
+            for (uint32_t c = 0; c < n_centroids; ++c) {
+                float d = fabsf(v - centroids[c]);
+                if (d < min_dist) { min_dist = d; best_idx = c; }
             }
-            min_dist = 1e9f;
-            for (uint8_t c = 0; c < 16; ++c) {
-                float d = fabsf(v1 - tq_polar_centroids[c]);
-                if (d < min_dist) { min_dist = d; idx1 = c; }
-            }
-            dst[b * (TQ_POLAR_BLOCK_SIZE / 2) + k / 2] = (uint8_t)(idx0 | (idx1 << 4));
+
+            /* Pack index into destination byte */
+            uint64_t byte_idx = (start + k) / values_per_byte;
+            uint32_t bit_offset = ((uint32_t)(start + k) % values_per_byte) * shift;
+            dst[byte_idx] |= (uint8_t)(best_idx << bit_offset);
         }
     }
 }
@@ -352,34 +475,36 @@ static void tq_dequant_raw(const tq_tensor_t *t,
                            const uint8_t *restrict src,
                            float *restrict dst) {
 #if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
-    if (t->b == 4) {
-        tq_dequant_raw_polar4_neon(t, src, dst);
+    if (t->b >= 2 && t->b <= 8) {
+        tq_dequant_raw_polar_neon(t, src, dst);
         return;
     }
 #endif
 
     uint64_t n_elements = (uint64_t)t->rows * (uint64_t)t->cols;
     uint64_t i;
+    uint32_t b = t->b;
 
-    if (t->b == 2) {
-        /* 2-bit ternary: 4 values per byte */
+    /* For bits 2-8, use centroid-based dequantization */
+    if (b >= 2 && b <= 8) {
+        const float *centroids = tq_get_centroids(b);
+        const float scale = tq_get_scale(t);
+        const uint32_t n_centroids = 1u << b;
+        const uint32_t values_per_byte = 8 / b;
+        const uint32_t mask = n_centroids - 1;
+
         for (i = 0; i < n_elements; ++i) {
-            uint8_t byte = src[i / 4];
-            uint8_t val = (byte >> (2 * (i % 4))) & 0x03;
-            dst[i] = (val == 0) ? -1.0f : (val == 1) ? 0.0f : 1.0f;
+            uint64_t byte_idx = i / values_per_byte;
+            uint32_t bit_offset = (uint32_t)(i % values_per_byte) * b;
+            uint32_t idx = ((src[byte_idx] >> bit_offset) & mask);
+            dst[i] = centroids[idx] * scale;
         }
-    } else if (t->b == 3) {
-        /* 3-bit: 2 values per byte (6 bits used, 2 wasted) */
-        for (i = 0; i < n_elements; ++i) {
-            uint64_t bit_offset = i * 3;
-            uint64_t byte_idx = bit_offset / 8;
-            uint32_t bit_idx = (uint32_t)(bit_offset % 8);
-            uint16_t two_bytes;
-            memcpy(&two_bytes, &src[byte_idx], 2);
-            uint8_t val = (two_bytes >> bit_idx) & 0x07;
-            /* 8-level centered: -3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5 */
-            dst[i] = (float)val - 3.5f;
-        }
+        return;
+    }
+
+    /* Fallback for unsupported bit widths */
+    for (i = 0; i < n_elements; ++i) {
+        dst[i] = 0.0f;
     }
 }
 

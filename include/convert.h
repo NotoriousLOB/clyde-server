@@ -24,7 +24,8 @@
 
 /* Conversion options */
 typedef struct {
-    int use_lz4;     /* 1 = enable per-tensor LZ4 compression for TQ output */
+    int use_lz4;           /* 1 = enable per-tensor LZ4 compression for TQ output */
+    uint32_t bits_per_weight; /* 2-8, default 4 (PolarQuant bits per weight) */
 } convert_opts_t;
 
 /* Returns 0 on success */
@@ -194,6 +195,15 @@ static int convert_opts_lz4(const convert_opts_t *opts) {
 #endif
 }
 
+static uint32_t convert_opts_bits(const convert_opts_t *opts) {
+    /* Default to 4 bits per weight if not specified */
+    if (!opts || opts->bits_per_weight == 0) return 4;
+    /* Clamp to valid range [2, 8] */
+    if (opts->bits_per_weight < 2) return 2;
+    if (opts->bits_per_weight > 8) return 8;
+    return opts->bits_per_weight;
+}
+
 static void quantize_f32_to_ternary(const float *src, uint8_t *dst,
                                     uint64_t n_elements) {
     uint64_t i;
@@ -224,6 +234,7 @@ int convert_safetensors_to_tq_opts(const char *st_path, const char *tq_path,
     uint8_t **bufs = NULL;     /* uncompressed packed data per tensor */
     uint8_t **comp_bufs = NULL; /* compressed data (only if lz4) */
     size_t *comp_sizes = NULL;
+    uint32_t bits = convert_opts_bits(opts);  /* bits per weight (2-8, default 4) */
 
     if (st_mmap(st_path, &sm) != 0) return -1;
     if (st_parse(&sm, &src) != 0) { st_munmap(&sm); return -1; }
@@ -258,11 +269,11 @@ int convert_safetensors_to_tq_opts(const char *st_path, const char *tq_path,
 
         if (st->dtype == ST_F32) {
 #if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
-            /* Use PolarQuant 4-bit with NEON FWHT */
-            bufs[i] = (uint8_t *)malloc((size_t)((n_elements + 1) / 2));
+            /* Use PolarQuant with configurable bits and NEON FWHT */
+            bufs[i] = (uint8_t *)malloc(tq_packed_size(n_elements, bits));
             if (bufs[i]) {
                 const float *fdata = (const float *)st_get_tensor_data(&src, st);
-                quantize_f32_to_polar4(fdata, bufs[i], n_elements, td);
+                quantize_f32_to_polar(fdata, bufs[i], n_elements, td, bits);
             }
 #else
             /* Fallback to ternary 2-bit */
@@ -468,6 +479,7 @@ int convert_gguf_to_tq_opts(const char *gguf_path, const char *tq_path,
     uint8_t **bufs = NULL;
     uint8_t **comp_bufs = NULL;
     size_t *comp_sizes = NULL;
+    uint32_t bits = convert_opts_bits(opts);  /* bits per weight (2-8, default 4) */
 
     if (gguf_mmap(gguf_path, &gm) != 0) return -1;
     if (gguf_parse(&gm, &src) != 0) { gguf_munmap(&gm); return -1; }
@@ -502,11 +514,11 @@ int convert_gguf_to_tq_opts(const char *gguf_path, const char *tq_path,
         if (gt->type == GGUF_TYPE_F32) {
             uint64_t n_elements = (uint64_t)td->rows * td->cols;
 #if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
-            /* Use PolarQuant 4-bit with NEON FWHT */
-            bufs[i] = (uint8_t *)malloc((size_t)((n_elements + 1) / 2));
+            /* Use PolarQuant with configurable bits and NEON FWHT */
+            bufs[i] = (uint8_t *)malloc(tq_packed_size(n_elements, bits));
             if (bufs[i]) {
                 const float *fdata = (const float *)gguf_get_tensor_data(&src, gt);
-                quantize_f32_to_polar4(fdata, bufs[i], n_elements, td);
+                quantize_f32_to_polar(fdata, bufs[i], n_elements, td, bits);
             }
 #else
             /* Fallback to ternary 2-bit */

@@ -141,9 +141,9 @@ static int test_dequant_b2(void) {
     if (tq_mmap(FIXTURE_PATH, &f) != 0) return 0;
     memset(dst, 0, sizeof(dst));
     tq_dequant(&f, 0, dst);
-    /* byte 0x24 = 00 10 01 00 => vals [0,1,2,0] => [-1, 0, +1, -1] */
-    ok = (dst[0] == -1.0f && dst[1] == 0.0f &&
-          dst[2] == 1.0f && dst[3] == -1.0f);
+    /* byte 0x24 = 00 10 01 00 => vals [0,1,2,0] => [-1.0, -0.33, 0.33, -1.0] */
+    ok = (dst[0] == -1.0f && dst[1] > -0.35f && dst[1] < -0.30f &&
+          dst[2] > 0.30f && dst[2] < 0.35f && dst[3] == -1.0f);
     tq_munmap(&f);
     return ok;
 }
