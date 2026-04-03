@@ -326,15 +326,25 @@ static inline float tq_get_scale(const tq_tensor_t *t) {
 #  endif
 
 /* Fast Walsh-Hadamard Transform (in-place, NEON, size 256) */
-static void tq_fwht_neon(float *restrict x) {  /* x must be _Alignas(64) */
+static void tq_fwht_neon(float *restrict x) {
     /* Iterative radix-2 FWHT — 8 stages for 256 */
     for (uint32_t len = 1; len < TQ_POLAR_BLOCK_SIZE; len <<= 1) {
         for (uint32_t i = 0; i < TQ_POLAR_BLOCK_SIZE; i += 2 * len) {
-            for (uint32_t j = 0; j < len; j += 4) {
-                float32x4_t u = vld1q_f32(&x[i + j]);
-                float32x4_t v = vld1q_f32(&x[i + j + len]);
-                vst1q_f32(&x[i + j],       vaddq_f32(u, v));
-                vst1q_f32(&x[i + j + len], vsubq_f32(u, v));
+            /* Use NEON only when len >= 4, otherwise scalar */
+            if (len >= 4) {
+                for (uint32_t j = 0; j < len; j += 4) {
+                    float32x4_t u = vld1q_f32(&x[i + j]);
+                    float32x4_t v = vld1q_f32(&x[i + j + len]);
+                    vst1q_f32(&x[i + j],       vaddq_f32(u, v));
+                    vst1q_f32(&x[i + j + len], vsubq_f32(u, v));
+                }
+            } else {
+                for (uint32_t j = 0; j < len; ++j) {
+                    float a = x[i + j];
+                    float b = x[i + j + len];
+                    x[i + j] = a + b;
+                    x[i + j + len] = a - b;
+                }
             }
         }
     }
@@ -374,6 +384,9 @@ static void tq_dequant_raw_polar_neon(const tq_tensor_t *t,
     for (uint64_t blk = 0; blk < n_blocks; ++blk) {
         TQ_ALIGN(64) float block[TQ_POLAR_BLOCK_SIZE];
 
+        /* Zero-initialize full block before unpacking */
+        memset(block, 0, sizeof(block));
+
         /* Unpack b-bit indices */
         for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && i + k < n_elements; ++k) {
             uint64_t byte_idx = (i + k) / values_per_byte;
@@ -384,11 +397,15 @@ static void tq_dequant_raw_polar_neon(const tq_tensor_t *t,
 
         /* Inverse FWHT + scale */
         tq_fwht_neon(block);
+        
         uint32_t block_len = (i + TQ_POLAR_BLOCK_SIZE <= n_elements) ? TQ_POLAR_BLOCK_SIZE : (uint32_t)(n_elements - i);
-        for (uint32_t k = 0; k < block_len; k += 4) {
+        uint32_t k = 0;
+        for (; k + 4 <= block_len; k += 4) {
             float32x4_t v = vld1q_f32(&block[k]);
             vst1q_f32(&dst[i + k], vmulq_f32(v, v_scale));
         }
+        for (; k < block_len; ++k)
+            dst[i + k] = block[k] * scale;
         i += TQ_POLAR_BLOCK_SIZE;
     }
 }
