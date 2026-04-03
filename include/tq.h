@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -194,6 +195,151 @@ void *tq_get_tensor_data(const tq_file_t *f, const tq_tensor_t *t) {
 }
 
 /* ================================================================
+ * POLARQUANT 4-BIT — Google ICLR 2026 style (NEON for Orin Nano)
+ * Block size 256 (power-of-2 for FWHT). b=4 now means PolarQuant.
+ * wht_seed stores IEEE bits of per-block scale (absmax).
+ * ================================================================ */
+
+#define TQ_POLAR_BLOCK_SIZE 256u
+
+static inline float tq_get_scale(const tq_tensor_t *t) {
+    uint64_t bits = t->wht_seed;
+    float scale;
+    memcpy(&scale, &bits, sizeof(scale));
+    return scale != 0.0f ? scale : 1.0f;
+}
+
+#if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
+#  include <arm_neon.h>
+
+/* Alignment for stack arrays - GCC/Clang extension */
+#  ifndef TQ_ALIGN
+#    define TQ_ALIGN(x) __attribute__((aligned(x)))
+#  endif
+
+/* Fast Walsh-Hadamard Transform (in-place, NEON, size 256) */
+static void tq_fwht_neon(float *restrict x) {  /* x must be _Alignas(64) */
+    /* Iterative radix-2 FWHT — 8 stages for 256 */
+    for (uint32_t len = 1; len < TQ_POLAR_BLOCK_SIZE; len <<= 1) {
+        for (uint32_t i = 0; i < TQ_POLAR_BLOCK_SIZE; i += 2 * len) {
+            for (uint32_t j = 0; j < len; j += 4) {
+                float32x4_t u = vld1q_f32(&x[i + j]);
+                float32x4_t v = vld1q_f32(&x[i + j + len]);
+                vst1q_f32(&x[i + j],       vaddq_f32(u, v));
+                vst1q_f32(&x[i + j + len], vsubq_f32(u, v));
+            }
+        }
+    }
+    /* Normalise by 1/sqrt(N) — done once at end */
+    float32x4_t norm = vdupq_n_f32(1.0f / sqrtf((float)TQ_POLAR_BLOCK_SIZE));
+    for (uint32_t i = 0; i < TQ_POLAR_BLOCK_SIZE; i += 4) {
+        float32x4_t v = vld1q_f32(&x[i]);
+        vst1q_f32(&x[i], vmulq_f32(v, norm));
+    }
+}
+
+/* 4-bit lookup table (Gaussian-matched centroids, scaled later) */
+static const float tq_polar_centroids[16] = {
+    -2.732f, -1.931f, -1.512f, -1.194f, -0.932f, -0.707f, -0.507f, -0.324f,
+     0.324f,  0.507f,  0.707f,  0.932f,  1.194f,  1.512f,  1.931f,  2.732f
+};
+
+static void tq_dequant_raw_polar4_neon(const tq_tensor_t *t,
+                                       const uint8_t *restrict src,
+                                       float *restrict dst) {
+    const float scale = tq_get_scale(t);
+    const float32x4_t v_scale = vdupq_n_f32(scale);
+
+    uint64_t n_elements = (uint64_t)t->rows * (uint64_t)t->cols;
+    uint64_t n_blocks = (n_elements + TQ_POLAR_BLOCK_SIZE - 1) / TQ_POLAR_BLOCK_SIZE;
+    uint64_t i = 0;
+
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        TQ_ALIGN(64) float block[TQ_POLAR_BLOCK_SIZE];
+
+        /* Unpack 4-bit indices (2 per byte) */
+        for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && i + k < n_elements; k += 2) {
+            uint8_t byte = src[b * (TQ_POLAR_BLOCK_SIZE / 2) + k / 2];
+            uint8_t idx0 = byte & 0x0F;
+            uint8_t idx1 = byte >> 4;
+            block[k]   = tq_polar_centroids[idx0];
+            block[k+1] = tq_polar_centroids[idx1];
+        }
+
+        /* Inverse FWHT + scale */
+        tq_fwht_neon(block);
+        uint32_t block_len = (i + TQ_POLAR_BLOCK_SIZE <= n_elements) ? TQ_POLAR_BLOCK_SIZE : (uint32_t)(n_elements - i);
+        for (uint32_t k = 0; k < block_len; k += 4) {
+            float32x4_t v = vld1q_f32(&block[k]);
+            vst1q_f32(&dst[i + k], vmulq_f32(v, v_scale));
+        }
+        i += TQ_POLAR_BLOCK_SIZE;
+    }
+}
+
+/* Quantizer — PolarQuant 4-bit (NEON max-abs + FWHT) */
+static void quantize_f32_to_polar4(const float *restrict src, uint8_t *restrict dst,
+                                   uint64_t n_elements, tq_tensor_t *td) {
+    td->b = 4;
+    td->unpacked_size = ((n_elements + 1) / 2);  /* 4 bits → 2 per byte */
+
+    uint64_t n_blocks = (n_elements + TQ_POLAR_BLOCK_SIZE - 1) / TQ_POLAR_BLOCK_SIZE;
+    float global_max_abs = 0.0f;
+
+    /* NEON max-abs reduction */
+    float32x4_t vmax = vdupq_n_f32(0.0f);
+    for (uint64_t j = 0; j + 4 <= n_elements; j += 4) {
+        float32x4_t v = vld1q_f32(&src[j]);
+        vmax = vmaxq_f32(vmax, vabsq_f32(v));
+    }
+    float32x2_t vmax2 = vpmax_f32(vget_low_f32(vmax), vget_high_f32(vmax));
+    global_max_abs = fmaxf(vget_lane_f32(vmax2, 0), vget_lane_f32(vmax2, 1));
+
+    /* scalar tail for max_abs */
+    for (uint64_t j = n_elements & ~3ULL; j < n_elements; ++j) {
+        float a = fabsf(src[j]);
+        if (a > global_max_abs) global_max_abs = a;
+    }
+
+    /* Per-block quant (scale stored once per tensor in wht_seed) */
+    uint64_t scale_bits;
+    memcpy(&scale_bits, &global_max_abs, sizeof(global_max_abs));
+    td->wht_seed = scale_bits;
+
+    memset(dst, 0, (size_t)td->unpacked_size);
+
+    TQ_ALIGN(64) float block[TQ_POLAR_BLOCK_SIZE];
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        uint64_t start = b * TQ_POLAR_BLOCK_SIZE;
+        uint64_t len = (start + TQ_POLAR_BLOCK_SIZE <= n_elements) ? TQ_POLAR_BLOCK_SIZE : n_elements - start;
+
+        memcpy(block, src + start, len * sizeof(float));
+        if (len < TQ_POLAR_BLOCK_SIZE) memset(block + len, 0, (TQ_POLAR_BLOCK_SIZE - len) * sizeof(float));
+
+        tq_fwht_neon(block);
+
+        /* Scalar quantization to centroids */
+        for (uint32_t k = 0; k < TQ_POLAR_BLOCK_SIZE && start + k < n_elements; k += 2) {
+            float v0 = block[k];
+            float v1 = block[k + 1];
+            uint8_t idx0 = 0, idx1 = 0;
+            float min_dist = 1e9f;
+            for (uint8_t c = 0; c < 16; ++c) {
+                float d = fabsf(v0 - tq_polar_centroids[c]);
+                if (d < min_dist) { min_dist = d; idx0 = c; }
+            }
+            min_dist = 1e9f;
+            for (uint8_t c = 0; c < 16; ++c) {
+                float d = fabsf(v1 - tq_polar_centroids[c]);
+                if (d < min_dist) { min_dist = d; idx1 = c; }
+            }
+            dst[b * (TQ_POLAR_BLOCK_SIZE / 2) + k / 2] = (uint8_t)(idx0 | (idx1 << 4));
+        }
+    }
+}
+#endif /* __ARM_NEON && TQ_WITH_NEON */
+
+/* ================================================================
  * Raw dequant kernel (scalar reference)
  *
  * For b=2: each byte packs 4 ternary values (-1, 0, +1)
@@ -205,6 +351,13 @@ void *tq_get_tensor_data(const tq_file_t *f, const tq_tensor_t *t) {
 static void tq_dequant_raw(const tq_tensor_t *t,
                            const uint8_t *restrict src,
                            float *restrict dst) {
+#if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
+    if (t->b == 4) {
+        tq_dequant_raw_polar4_neon(t, src, dst);
+        return;
+    }
+#endif
+
     uint64_t n_elements = (uint64_t)t->rows * (uint64_t)t->cols;
     uint64_t i;
 

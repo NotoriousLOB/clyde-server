@@ -248,43 +248,61 @@ int convert_safetensors_to_tq_opts(const char *st_path, const char *tq_path,
     for (i = 0; i < src.num_tensors; ++i) {
         const st_tensor_t *st = &src.tensors[i];
         tq_tensor_t *td = &descs[i];
-        uint64_t n_elements, packed_size;
+        uint64_t n_elements;
 
         strncpy(td->name, st->name, sizeof(td->name) - 1);
-        td->b = 2;
         td->rows = (st->ndim >= 1) ? (uint32_t)st->shape[0] : 1;
         td->cols = (st->ndim >= 2) ? (uint32_t)st->shape[1] : 1;
 
         n_elements = (uint64_t)td->rows * td->cols;
-        packed_size = (n_elements + 3) / 4;
-        td->unpacked_size = packed_size;
 
-        bufs[i] = (uint8_t *)calloc(1, (size_t)packed_size);
-        if (bufs[i] && st->dtype == ST_F32) {
-            const float *fdata = (const float *)st_get_tensor_data(&src, st);
-            quantize_f32_to_ternary(fdata, bufs[i], n_elements);
-        } else if (bufs[i]) {
-            const void *raw = st_get_tensor_data(&src, st);
-            memcpy(bufs[i], raw, (size_t)packed_size);
+        if (st->dtype == ST_F32) {
+#if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
+            /* Use PolarQuant 4-bit with NEON FWHT */
+            bufs[i] = (uint8_t *)malloc((size_t)((n_elements + 1) / 2));
+            if (bufs[i]) {
+                const float *fdata = (const float *)st_get_tensor_data(&src, st);
+                quantize_f32_to_polar4(fdata, bufs[i], n_elements, td);
+            }
+#else
+            /* Fallback to ternary 2-bit */
+            td->b = 2;
+            td->unpacked_size = (n_elements + 3) / 4;
+            bufs[i] = (uint8_t *)calloc(1, (size_t)td->unpacked_size);
+            if (bufs[i]) {
+                const float *fdata = (const float *)st_get_tensor_data(&src, st);
+                quantize_f32_to_ternary(fdata, bufs[i], n_elements);
+            }
+#endif
+        } else {
+            /* Non-F32: passthrough as raw bytes */
+            td->b = 0;
+            td->tensor_flags = TQ_TFLAG_SET_ORIG_TYPE(0, (uint32_t)st->dtype);
+            td->unpacked_size = st->size;
+            bufs[i] = (uint8_t *)malloc((size_t)st->size);
+            if (bufs[i]) {
+                const void *raw = st_get_tensor_data(&src, st);
+                memcpy(bufs[i], raw, (size_t)st->size);
+            }
         }
 
 #ifdef TQ_WITH_LZ4
-        if (lz4 && bufs[i] && packed_size > 0) {
+        if (lz4 && bufs[i] && td->unpacked_size > 0) {
             /* Use LZ4 Frame API for compression */
             LZ4F_preferences_t prefs;
             size_t bound;
             size_t csize;
 
             memset(&prefs, 0, sizeof(prefs));
-            prefs.frameInfo.contentSize = packed_size;
+            prefs.frameInfo.contentSize = td->unpacked_size;
 
-            bound = LZ4F_compressFrameBound(packed_size, &prefs);
+            bound = LZ4F_compressFrameBound(td->unpacked_size, &prefs);
             comp_bufs[i] = (uint8_t *)malloc(bound);
             if (comp_bufs[i]) {
                 csize = LZ4F_compressFrame(comp_bufs[i], bound,
-                                           bufs[i], packed_size,
+                                           bufs[i], td->unpacked_size,
                                            &prefs);
-                if (!LZ4F_isError(csize) && csize < packed_size) {
+                if (!LZ4F_isError(csize) && csize < td->unpacked_size) {
                     /* Compression helped */
                     comp_sizes[i] = csize;
                 } else {
@@ -483,15 +501,24 @@ int convert_gguf_to_tq_opts(const char *gguf_path, const char *tq_path,
 
         if (gt->type == GGUF_TYPE_F32) {
             uint64_t n_elements = (uint64_t)td->rows * td->cols;
+#if defined(__ARM_NEON) && defined(TQ_WITH_NEON)
+            /* Use PolarQuant 4-bit with NEON FWHT */
+            bufs[i] = (uint8_t *)malloc((size_t)((n_elements + 1) / 2));
+            if (bufs[i]) {
+                const float *fdata = (const float *)gguf_get_tensor_data(&src, gt);
+                quantize_f32_to_polar4(fdata, bufs[i], n_elements, td);
+            }
+#else
+            /* Fallback to ternary 2-bit */
             td->b = 2;
             td->tensor_flags = 0;
             td->unpacked_size = (n_elements + 3) / 4;
-
             bufs[i] = (uint8_t *)calloc(1, (size_t)td->unpacked_size);
             if (bufs[i]) {
                 const float *fdata = (const float *)gguf_get_tensor_data(&src, gt);
                 quantize_f32_to_ternary(fdata, bufs[i], n_elements);
             }
+#endif
         } else {
             td->b = 0;
             td->tensor_flags = TQ_TFLAG_SET_ORIG_TYPE(0, (uint32_t)gt->type);

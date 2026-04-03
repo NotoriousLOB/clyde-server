@@ -211,9 +211,10 @@ static int test_st_to_tq(void) {
     if (convert_safetensors_to_tq(ST_PATH, out) == 0) {
         tq_file_t f;
         if (tq_mmap(out, &f) == 0) {
+            /* On NEON: b=4 (PolarQuant), otherwise b=2 (ternary) */
             ok = (f.hdr->tensor_count == 1 &&
                   strcmp(f.tensors[0].name, "w") == 0 &&
-                  f.tensors[0].b == 2);
+                  (f.tensors[0].b == 2 || f.tensors[0].b == 4));
             tq_munmap(&f);
         }
     }
@@ -227,9 +228,10 @@ static int test_gguf_to_tq(void) {
     if (convert_gguf_to_tq(GGUF_PATH, out) == 0) {
         tq_file_t f;
         if (tq_mmap(out, &f) == 0) {
+            /* On NEON: b=4 (PolarQuant), otherwise b=2 (ternary) */
             ok = (f.hdr->tensor_count == 1 &&
                   strcmp(f.tensors[0].name, "w") == 0 &&
-                  f.tensors[0].b == 2);
+                  (f.tensors[0].b == 2 || f.tensors[0].b == 4));
             tq_munmap(&f);
         }
     }
